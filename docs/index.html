@@ -157,7 +157,17 @@ html, body { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: n
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <script>if (navigator.audioSession) navigator.audioSession.type = 'playback';</script>
-<script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js'));</script>
+<script>
+if ('serviceWorker' in navigator) addEventListener('load', () => {
+  navigator.serviceWorker.register('sw.js');
+  // Once the game is running, have the service worker keep project.zip for offline play.
+  const poll = setInterval(() => {
+    if (!(window.vm && vm.runtime.frameLoop && vm.runtime.frameLoop.running)) return;
+    clearInterval(poll);
+    navigator.serviceWorker.ready.then(r => r.active && r.active.postMessage('cache-project'));
+  }, 1000);
+});
+</script>
 </head>
 <body>
   <div id="app"></div>
@@ -455,19 +465,30 @@ html, body { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: n
       const getProjectData = (function() {
         const storage = scaffolding.storage;
         storage.onprogress = (total, loaded) => {
-          setProgress(interpolate(0.2, 0.98, loaded / total));
+          setProgress(interpolate(0.75, 0.98, loaded / total));
         };
         
-        storage.addWebStore(
-          [
-            storage.AssetType.ImageVector,
-            storage.AssetType.ImageBitmap,
-            storage.AssetType.Sound,
-            storage.AssetType.Font
-          ].filter(i => i),
-          (asset) => new URL('./assets/' + asset.assetId + '.' + asset.dataFormat, location).href
-        );
-        return () => new Promise((resolve, reject) => {
+        let zip;
+        // Allow zip to be GC'd after project loads
+        vm.runtime.on('PROJECT_LOADED', () => (zip = null));
+        const findFileInZip = (path) => zip.file(path) || zip.file(new RegExp("^([^/]*/)?" + path + "$"))[0];
+        storage.addHelper({
+          load: (assetType, assetId, dataFormat) => {
+            if (!zip) {
+              throw new Error('Zip is not loaded or has been closed');
+            }
+            const path = assetId + '.' + dataFormat;
+            const file = findFileInZip(path);
+            if (!file) {
+              console.error('Asset is not in zip: ' + path);
+              return Promise.resolve(null);
+            }
+            return file
+              .async('uint8array')
+              .then((data) => storage.createAsset(assetType, dataFormat, data, assetId));
+          }
+        });
+        return () => (() => new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.onload = () => {
           resolve(xhr.response);
@@ -481,13 +502,20 @@ html, body { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: n
         };
         xhr.onprogress = (e) => {
           if (e.lengthComputable) {
-            setProgress(interpolate(0.1, 0.2, e.loaded / e.total));
+            setProgress(interpolate(0.1, 0.75, e.loaded / e.total));
           }
         };
         xhr.responseType = 'arraybuffer';
-        xhr.open('GET', "./assets/project.json");
+        xhr.open('GET', "./project.zip");
         xhr.send();
-      });
+      }))().then(async (data) => {
+          zip = await Scaffolding.JSZip.loadAsync(data);
+          const file = findFileInZip('project.json');
+          if (!file) {
+            throw new Error('project.json is not in zip');
+          }
+          return file.async('arraybuffer');
+        });
       })();
     </script>
   <script>

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import Packager from '@turbowarp/packager';
+import { execFileSync } from 'node:child_process';
 
 const PROJECT_ID = '1291946676';
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -27,16 +28,36 @@ for (let i = 0; i < missing.length; i += 32) {
   }));
 }
 
-// 2. Assemble the .sb3.
+// 2. Shrink assets for a faster first load: convert WAV to MP3 (SVGs stay
+// untouched: minifying them changed how some digits render).
+// Outputs are cached by asset id, so rebuilds only redo new assets.
+const optDir = path.join(cacheDir, 'opt');
+fs.mkdirSync(optDir, { recursive: true });
+const files = new Map();
+for (const t of json.targets) for (const a of [...t.costumes, ...t.sounds]) {
+  const src = path.join(cacheDir, 'assets', a.md5ext);
+  if (a.dataFormat === 'wav') {
+    const name = a.assetId + '.mp3';
+    const out = path.join(optDir, name);
+    if (!fs.existsSync(out)) execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', src, '-codec:a', 'libmp3lame', '-q:a', '4', out]);
+    a.md5ext = name;
+    a.dataFormat = 'mp3';
+    files.set(name, out);
+  } else {
+    files.set(a.md5ext, src);
+  }
+}
+
+// 3. Assemble the .sb3.
 const sb3zip = new JSZip();
-sb3zip.file('project.json', projectJson);
-for (const id of ids) sb3zip.file(id, fs.readFileSync(path.join(cacheDir, 'assets', id)));
+sb3zip.file('project.json', JSON.stringify(json));
+for (const [name, file] of files) sb3zip.file(name, fs.readFileSync(file));
 const sb3 = await sb3zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
 
-// 3. Package with TurboWarp, with the lazy SVG patch that keeps memory low.
+// 4. Package with TurboWarp, with the lazy SVG patch that keeps memory low.
 const p = new Packager.Packager();
 p.project = await Packager.loadProject(sb3);
-p.options.target = 'zip';
+p.options.target = 'zip-one-asset';
 p.options.autoplay = true;
 p.options.interpolation = true;
 p.options.controls.fullscreen.enabled = true;
@@ -45,7 +66,7 @@ p.options.loadingScreen.text = 'Numberblocks Generator by brizluca';
 p.options.custom.js = fs.readFileSync(path.join(root, 'build', 'lazy-svg.js'), 'utf8');
 const pkg = await p.package();
 
-// 4. Unpack into docs/ and add the PWA bits.
+// 5. Unpack into docs/ and add the PWA bits.
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 const out = await JSZip.loadAsync(pkg.data);
@@ -59,11 +80,13 @@ for (const f of fs.readdirSync(path.join(root, 'pwa'))) {
   if (f === 'thumb.png') continue;
   fs.copyFileSync(path.join(root, 'pwa', f), path.join(outDir, f));
 }
-const assetList = fs.readdirSync(path.join(outDir, 'assets')).map(f => 'assets/' + f);
+// project.zip is what the player downloads; recompress it so the transfer is small.
+const projectZipPath = path.join(outDir, 'project.zip');
+const projectZip = await JSZip.loadAsync(fs.readFileSync(projectZipPath));
+fs.writeFileSync(projectZipPath, await projectZip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
 const swPath = path.join(outDir, 'sw.js');
 fs.writeFileSync(swPath, fs.readFileSync(swPath, 'utf8')
-  .replace('__VERSION__', () => `${meta.history.modified}-${Date.now()}`)
-  .replace('__ASSETS__', () => JSON.stringify(assetList)));
+  .replace('__VERSION__', () => `${meta.history.modified}-${Date.now()}`));
 
 const head = `
 <link rel="manifest" href="manifest.webmanifest">
@@ -78,7 +101,17 @@ html, body { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: n
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <script>if (navigator.audioSession) navigator.audioSession.type = 'playback';</script>
-<script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js'));</script>
+<script>
+if ('serviceWorker' in navigator) addEventListener('load', () => {
+  navigator.serviceWorker.register('sw.js');
+  // Once the game is running, have the service worker keep project.zip for offline play.
+  const poll = setInterval(() => {
+    if (!(window.vm && vm.runtime.frameLoop && vm.runtime.frameLoop.running)) return;
+    clearInterval(poll);
+    navigator.serviceWorker.ready.then(r => r.active && r.active.postMessage('cache-project'));
+  }, 1000);
+});
+</script>
 </head>`;
 const indexPath = path.join(outDir, 'index.html');
 let html = fs.readFileSync(indexPath, 'utf8');
@@ -86,4 +119,4 @@ if (!html.includes('</head>')) throw new Error('index.html has no </head> anchor
 html = html.replace('</head>', () => head);
 fs.writeFileSync(indexPath, html);
 fs.writeFileSync(path.join(outDir, '.nojekyll'), '');
-console.log(`built docs/ (${assetList.length} assets)`);
+console.log('built docs/');
