@@ -77,6 +77,7 @@ html, body { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: n
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
+<script>if (navigator.audioSession) navigator.audioSession.type = 'playback';</script>
 <script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js'));</script>
 </head>`;
 const indexPath = path.join(outDir, 'index.html');
