@@ -1,0 +1,13 @@
+{
+  "name": "numberblocks-tablet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build/build.mjs",
+    "serve": "npx --yes http-server docs -p 8770 -c-1"
+  },
+  "dependencies": {
+    "@turbowarp/packager": "3.14.0",
+    "jszip": "^3.10.1"
+  }
+}
