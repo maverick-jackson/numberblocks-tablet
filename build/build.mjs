@@ -38,6 +38,7 @@ const p = new Packager.Packager();
 p.project = await Packager.loadProject(sb3);
 p.options.target = 'zip';
 p.options.autoplay = true;
+p.options.interpolation = true;
 p.options.controls.fullscreen.enabled = true;
 p.options.app.windowTitle = 'Numberblocks Generator';
 p.options.loadingScreen.text = 'Numberblocks Generator by brizluca';
@@ -69,6 +70,10 @@ const head = `
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png">
 <meta name="theme-color" content="#000000">
+<style>
+html, body { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: none; touch-action: none;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+</style>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">

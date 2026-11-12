@@ -37,30 +37,80 @@
     this._context = null;
   };
 
-  SVGSkinProto.getTexture = function (scale) {
-    if (this._lazyReady === false && (this._lazyBlob || this._lazyFallbackSrc)) {
-      const img = document.createElement('img');
-      img.onload = () => {
-        if (this._lazyUrl) { URL.revokeObjectURL(this._lazyUrl); this._lazyUrl = null; }
-        this._canvas = document.createElement('canvas');
-        this._context = this._canvas.getContext('2d');
-        this._svgImage = img;
-        this._lazyReady = true;
-        this.resetMIPs();
-        this.emitWasAltered();
-      };
-      if (this._lazyBlob) {
-        this._lazyUrl = URL.createObjectURL(this._lazyBlob);
-        img.src = this._lazyUrl;
-      } else {
-        img.src = this._lazyFallbackSrc;
-      }
-      this._lazyBlob = null;
-      this._lazyFallbackSrc = null;
+  // Start decoding the SVG; calls back once the costume can be drawn.
+  SVGSkinProto._lazyLoad = function () {
+    if (this._lazyReady !== false || !(this._lazyBlob || this._lazyFallbackSrc)) return;
+    const img = document.createElement('img');
+    img.onload = () => {
+      if (this._lazyUrl) { URL.revokeObjectURL(this._lazyUrl); this._lazyUrl = null; }
+      this._canvas = document.createElement('canvas');
+      this._context = this._canvas.getContext('2d');
+      this._svgImage = img;
+      this._lazyReady = true;
+      this.resetMIPs();
+      this.emitWasAltered();
+      const waiters = this._lazyWaiters;
+      this._lazyWaiters = null;
+      if (waiters) for (const fn of waiters) fn();
+    };
+    if (this._lazyBlob) {
+      this._lazyUrl = URL.createObjectURL(this._lazyBlob);
+      img.src = this._lazyUrl;
+    } else {
+      img.src = this._lazyFallbackSrc;
     }
+    this._lazyBlob = null;
+    this._lazyFallbackSrc = null;
+  };
+
+  SVGSkinProto.getTexture = function (scale) {
+    this._lazyLoad();
     if (this._lazyReady === false) return BaseProto.getTexture.call(this, scale);
     return origGetTexture.call(this, scale);
   };
+
+  // When a sprite switches to a costume that is not decoded yet, keep showing
+  // the old costume until the new one is ready, instead of a blank frame.
+  const origUpdateSkin = r.updateDrawableSkinId;
+  const pending = {};
+  r.updateDrawableSkinId = function (drawableID, skinId) {
+    const skin = this._allSkins[skinId];
+    const drawable = this._allDrawables[drawableID];
+    if (skin && skin._lazyReady === false && drawable && drawable.skin && drawable.skin._lazyReady !== false) {
+      pending[drawableID] = skinId;
+      (skin._lazyWaiters || (skin._lazyWaiters = [])).push(() => {
+        if (pending[drawableID] !== skinId) return;
+        delete pending[drawableID];
+        if (this._allDrawables[drawableID] && this._allSkins[skinId]) origUpdateSkin.call(this, drawableID, skinId);
+      });
+      skin._lazyLoad();
+      if (skin._lazyReady === false) return;
+    }
+    delete pending[drawableID];
+    return origUpdateSkin.call(this, drawableID, skinId);
+  };
+
+  // Once the project is running, quietly decode each sprite's current costume
+  // so sprites that get shown later (menus, digits) do not appear a frame late.
+  let warmed = false;
+  vm.runtime.on('PROJECT_RUN_START', () => {
+    if (warmed) return;
+    warmed = true;
+    setTimeout(() => {
+      const skins = [];
+      for (const t of vm.runtime.targets) {
+        if (!t.isOriginal || t.isStage) continue;
+        const c = t.getCostumes()[t.currentCostume];
+        const skin = c && r._allSkins[c.skinId];
+        if (skin && skin._lazyReady === false) skins.push(skin);
+      }
+      const step = () => {
+        for (const skin of skins.splice(0, 4)) skin._lazyLoad();
+        if (skins.length) setTimeout(step, 50);
+      };
+      step();
+    }, 1500);
+  });
 
   SVGSkinProto.dispose = function () {
     if (this._lazyUrl) URL.revokeObjectURL(this._lazyUrl);
